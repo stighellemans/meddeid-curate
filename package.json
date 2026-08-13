@@ -1,0 +1,32 @@
+{
+  "name": "meddeid-curate",
+  "version": "0.1.0",
+  "description": "Local multi-annotator reconciliation for canonical MedDeID JSONL",
+  "private": true,
+  "author": "Stig Hellemans",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently \"PORT=8793 npm run dev:server\" \"VITE_API_PROXY_TARGET=http://localhost:8793 npm run dev:client -- --port 5183\"",
+    "dev:server": "node server/index.js",
+    "dev:client": "vite",
+    "start": "node server/index.js",
+    "build": "vite build",
+    "test": "node --test \"tests/unit/**/*.test.js\"",
+    "test:browser": "node tests/browser/smoke.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "playwright": "^1.59.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.2.1"
+  }
+}

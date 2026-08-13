@@ -1,0 +1,5 @@
+node_modules/
+dist/
+data/project.json
+data/exports/
+*.log
