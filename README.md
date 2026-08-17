@@ -92,11 +92,20 @@ linked directly to `meddeid-subannotate`.
 
 ## Docker
 
+The released container is the default route; no source checkout or Node.js
+installation is required:
+
 ```bash
-docker build -t meddeid-curate .
+docker pull ghcr.io/stighellemans/meddeid-curate:0.1.0
+mkdir -p curation-data
 docker run --rm -p 127.0.0.1:8793:8793 \
-  -v "$PWD/curation-data:/app/data" meddeid-curate
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -v "$PWD/curation-data:/app/data" \
+  ghcr.io/stighellemans/meddeid-curate:0.1.0
 ```
+
+To test an unreleased source change instead, run
+`docker build -t meddeid-curate .` and substitute that image name above.
 
 ## Security and development
 
