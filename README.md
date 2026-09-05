@@ -5,7 +5,7 @@ application compares two or more completed independent annotation sets,
 records explicit curation decisions, and publishes primary gold data together
 with an audit log.
 
-See [prepare and annotate data](https://stighellemans.github.io/meddeid/workflows/prepare-and-annotate/#5-curate-only-when-required)
+See [prepare and annotate data](https://stighellemans.github.io/meddeid/workflows/prepare-and-annotate/#6-reconcile-multiple-reviewers-only-when-required)
 for when curation belongs in a study. This repository remains authoritative for
 reconciliation decisions, audit behavior, and gold publication.
 
