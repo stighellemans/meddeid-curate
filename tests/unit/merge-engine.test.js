@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { createMergeProject, finalSpansForDocument, parseCanonicalJsonl, projectStats } from '../../server/merge-engine.js';
+import { applyCuratedSeed, createMergeProject, finalSpansForDocument, parseCanonicalJsonl, projectStats } from '../../server/merge-engine.js';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const taxonomy = JSON.parse(await fs.readFile(path.join(rootDir, 'contracts', 'taxonomy.json'), 'utf8'));
@@ -89,11 +89,28 @@ test('explicitly completed empty documents are distinct from missing submissions
       { name: 'a.jsonl', content: jsonl([row([]), row([], { document_id: 'doc-002' })]) },
       { name: 'b.jsonl', content: emptyB },
     ], taxonomy),
-    /document_id set differs/,
+    /document_id set differs.*missing document_id values: "doc-002"/,
   );
   assert.throws(
     () => parseCanonicalJsonl('incomplete.jsonl', jsonl([row([], { annotated: false })]), taxonomy),
     /not explicitly completed/,
+  );
+});
+
+test('text mismatches identify the document, files, code-point offset, characters, lengths, and context', () => {
+  assert.throws(
+    () => createMergeProject([
+      { name: 'reviewer-a.jsonl', content: jsonl([row([])]) },
+      { name: 'reviewer-b.jsonl', content: jsonl([row([], { text: 'Xlice met Bob on Monday.' })]) },
+    ], taxonomy),
+    (error) => {
+      assert.match(error.message, /^doc-001: text differs between reviewer-a\.jsonl and reviewer-b\.jsonl/);
+      assert.match(error.message, /Unicode code-point offset 0/);
+      assert.match(error.message, /reviewer-a\.jsonl has "A", reviewer-b\.jsonl has "X"/);
+      assert.match(error.message, /lengths 24 and 24/);
+      assert.match(error.message, /context "Alice met Bob on Monday\." versus "Xlice met Bob on Monday\."/);
+      return true;
+    },
   );
 });
 
@@ -172,4 +189,34 @@ test('accepted candidates become final spans while rejected groups do not', () =
     ],
   };
   assert.deepEqual(finalSpansForDocument(project.documents[0]).map((span) => span.text), ['Al', 'ice']);
+});
+
+test('optional prior curation seeds included candidates, agreed spans, and curator edits without becoming a source', () => {
+  const monday = { begin: 17, end: 23, text: 'Monday', label: 'Date' };
+  const project = createMergeProject([
+    { name: 'a.jsonl', content: jsonl([row([
+      { begin: 0, end: 5, text: 'Alice', label: 'Name:Patient' },
+      monday,
+    ])]) },
+    { name: 'b.jsonl', content: jsonl([row([
+      { begin: 0, end: 5, text: 'Alice', label: 'Name:Other' },
+      monday,
+    ])]) },
+  ], taxonomy);
+  const seeded = applyCuratedSeed(project, {
+    name: 'prior-curated.jsonl',
+    content: jsonl([row([
+      { begin: 0, end: 5, text: 'Alice', label: 'Name:Other' },
+      { begin: 10, end: 13, text: 'Bob', label: 'Profession' },
+      monday,
+    ])]),
+  }, taxonomy, { curatorId: 'curator-test' });
+
+  assert.equal(seeded.sources.length, 2);
+  assert.equal(seeded.curated_seed.filename, 'prior-curated.jsonl');
+  assert.equal(seeded.documents[0].disagreements[0].decision.type, 'accept_candidate');
+  assert.equal(seeded.documents[0].consensus_span_overrides.length, 0);
+  assert.equal(seeded.documents[0].curator_spans[0].text, 'Bob');
+  assert.deepEqual(finalSpansForDocument(seeded.documents[0]).map((span) => span.text), ['Alice', 'Bob', 'Monday']);
+  assert.equal(seeded.decision_events[0].action, 'import_curated_seed');
 });

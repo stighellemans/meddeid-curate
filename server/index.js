@@ -17,7 +17,10 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.get('/api/bootstrap', async (_req, res) => res.json(await store.bootstrap()));
 app.post('/api/import', async (req, res) => {
   try {
-    res.json(await store.importFiles(req.body?.files, { curatorId: req.body?.curatorId }));
+    res.json(await store.importFiles(req.body?.files, {
+      curatorId: req.body?.curatorId,
+      curatedFile: req.body?.curatedFile,
+    }));
   } catch (error) {
     res.status(error?.statusCode ?? 400).json({ error: 'Import failed', detail: error.message });
   }

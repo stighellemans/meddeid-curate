@@ -129,19 +129,50 @@ function groupCandidates(candidates) {
   return groups.sort((left, right) => compareSpans(left[0].span, right[0].span));
 }
 
+function textDifference(expectedText, actualText) {
+  const expected = Array.from(expectedText);
+  const actual = Array.from(actualText);
+  let offset = 0;
+  while (offset < expected.length && offset < actual.length && expected[offset] === actual[offset]) offset += 1;
+  const contextBegin = Math.max(0, offset - 12);
+  const contextEnd = Math.max(offset + 13, contextBegin + 25);
+  return {
+    offset,
+    expectedCharacter: expected[offset] === undefined ? '<end of text>' : JSON.stringify(expected[offset]),
+    actualCharacter: actual[offset] === undefined ? '<end of text>' : JSON.stringify(actual[offset]),
+    expectedLength: expected.length,
+    actualLength: actual.length,
+    expectedContext: JSON.stringify(expected.slice(contextBegin, contextEnd).join('')),
+    actualContext: JSON.stringify(actual.slice(contextBegin, contextEnd).join('')),
+  };
+}
+
 function assertMatchingDocuments(sources) {
   const expectedIds = [...sources[0].documents.keys()].sort();
   for (const source of sources.slice(1)) {
     const actualIds = [...source.documents.keys()].sort();
-    if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
-      throw new Error(`${source.name}: document_id set differs from ${sources[0].name}`);
+    const missing = expectedIds.filter((documentId) => !source.documents.has(documentId));
+    const unexpected = actualIds.filter((documentId) => !sources[0].documents.has(documentId));
+    if (missing.length > 0 || unexpected.length > 0) {
+      const details = [
+        missing.length > 0 ? `missing document_id values: ${missing.map((item) => JSON.stringify(item)).join(', ')}` : null,
+        unexpected.length > 0 ? `unexpected document_id values: ${unexpected.map((item) => JSON.stringify(item)).join(', ')}` : null,
+      ].filter(Boolean).join('; ');
+      throw new Error(`${source.name}: document_id set differs from ${sources[0].name} (${details})`);
     }
   }
   for (const documentId of expectedIds) {
     const expectedText = sources[0].documents.get(documentId).text;
     for (const source of sources.slice(1)) {
-      if (source.documents.get(documentId).text !== expectedText) {
-        throw new Error(`${documentId}: text differs between ${sources[0].name} and ${source.name}`);
+      const actualText = source.documents.get(documentId).text;
+      if (actualText !== expectedText) {
+        const difference = textDifference(expectedText, actualText);
+        throw new Error(
+          `${documentId}: text differs between ${sources[0].name} and ${source.name} at Unicode code-point offset ${difference.offset}: `
+          + `${sources[0].name} has ${difference.expectedCharacter}, ${source.name} has ${difference.actualCharacter}; `
+          + `lengths ${difference.expectedLength} and ${difference.actualLength}; `
+          + `context ${difference.expectedContext} versus ${difference.actualContext}`,
+        );
       }
     }
   }
@@ -326,6 +357,153 @@ export function createMergeProject(files, taxonomy) {
     })),
     documents,
   };
+}
+
+export function applyCuratedSeed(project, file, taxonomy, { curatorId } = {}) {
+  if (!file || !String(file.name ?? '').toLowerCase().endsWith('.jsonl')) {
+    throw new Error('Optional prior curation must be one canonical JSONL file');
+  }
+  const seededDocuments = parseCanonicalJsonl(String(file.name), file.content, taxonomy);
+  const expectedIds = project.documents.map((document) => document.document_id).sort();
+  const actualIds = [...seededDocuments.keys()].sort();
+  const missing = expectedIds.filter((documentId) => !seededDocuments.has(documentId));
+  const unexpected = actualIds.filter((documentId) => !project.documents.some((document) => document.document_id === documentId));
+  if (missing.length > 0 || unexpected.length > 0) {
+    const details = [
+      missing.length > 0 ? `missing document_id values: ${missing.map((item) => JSON.stringify(item)).join(', ')}` : null,
+      unexpected.length > 0 ? `unexpected document_id values: ${unexpected.map((item) => JSON.stringify(item)).join(', ')}` : null,
+    ].filter(Boolean).join('; ');
+    throw new Error(`${file.name}: curated document_id set differs from the annotation sets (${details})`);
+  }
+
+  const occurredAt = new Date().toISOString();
+  let seededSpanCount = 0;
+  for (const document of project.documents) {
+    const seeded = seededDocuments.get(document.document_id);
+    if (seeded.text !== document.text) {
+      const difference = textDifference(document.text, seeded.text);
+      throw new Error(
+        `${document.document_id}: text differs between annotation sets and ${file.name} at Unicode code-point offset ${difference.offset}: `
+        + `annotation sets have ${difference.expectedCharacter}, ${file.name} has ${difference.actualCharacter}; `
+        + `lengths ${difference.expectedLength} and ${difference.actualLength}; `
+        + `context ${difference.expectedContext} versus ${difference.actualContext}`,
+      );
+    }
+    for (let index = 1; index < seeded.spans.length; index += 1) {
+      if (spansOverlap(seeded.spans[index - 1], seeded.spans[index])) {
+        throw new Error(`${file.name}: ${document.document_id} contains overlapping curated spans`);
+      }
+    }
+
+    seededSpanCount += seeded.spans.length;
+    const consumed = new Set();
+    const exactConsensus = new Map();
+    for (const consensus of document.consensus_spans) {
+      const index = seeded.spans.findIndex((span, spanIndex) => !consumed.has(spanIndex) && spanKey(span) === spanKey(consensus));
+      if (index >= 0) {
+        consumed.add(index);
+        exactConsensus.set(consensus.consensus_span_id, index);
+      }
+    }
+
+    for (const disagreement of document.disagreements) {
+      const indexes = seeded.spans
+        .map((span, index) => ({ span, index }))
+        .filter(({ span, index }) => !consumed.has(index) && spansOverlap(span, disagreement))
+        .map(({ index }) => index);
+      const selected = indexes.map((index) => seeded.spans[index]);
+      const candidate = selected.length === 1
+        ? disagreement.candidates.find((item) => spanKey(item.span) === spanKey(selected[0]))
+        : null;
+      disagreement.status = 'resolved';
+      if (candidate) {
+        disagreement.decision = {
+          type: 'accept_candidate',
+          candidate_id: candidate.candidate_id,
+          seeded: true,
+          resolved_at: occurredAt,
+        };
+      } else if (selected.length === 0) {
+        disagreement.decision = {
+          type: 'reject_all',
+          candidate_id: null,
+          seeded: true,
+          resolved_at: occurredAt,
+        };
+      } else {
+        if (selected.some((span) => span.begin < disagreement.begin || span.end > disagreement.end)) {
+          throw new Error(`${file.name}: ${document.document_id} has a curated span crossing disagreement boundaries [${disagreement.begin}, ${disagreement.end})`);
+        }
+        disagreement.decision = {
+          type: 'custom_spans',
+          candidate_id: null,
+          spans: selected.map((span) => ({ ...span })),
+          seeded: true,
+          resolved_at: occurredAt,
+        };
+      }
+      indexes.forEach((index) => consumed.add(index));
+    }
+
+    for (const consensus of document.consensus_spans) {
+      if (exactConsensus.has(consensus.consensus_span_id)) continue;
+      const overlapping = seeded.spans
+        .map((span, index) => ({ span, index }))
+        .filter(({ span, index }) => !consumed.has(index) && spansOverlap(span, consensus));
+      if (overlapping.length > 1) {
+        throw new Error(`${file.name}: ${document.document_id} has multiple curated spans replacing agreed span [${consensus.begin}, ${consensus.end})`);
+      }
+      if (overlapping.length === 1) {
+        const [{ span, index }] = overlapping;
+        document.consensus_span_overrides.push({
+          consensus_span_id: consensus.consensus_span_id,
+          action: 'update',
+          span: { ...span },
+          seeded: true,
+        });
+        consumed.add(index);
+      } else {
+        document.consensus_span_overrides.push({
+          consensus_span_id: consensus.consensus_span_id,
+          action: 'delete',
+          span: null,
+          seeded: true,
+        });
+      }
+    }
+
+    document.curator_spans = seeded.spans
+      .map((span, index) => ({ span, index }))
+      .filter(({ index }) => !consumed.has(index))
+      .map(({ span, index }) => ({
+        ...span,
+        curator_span_id: stableId('curator-span', [project.project_id, file.name, document.document_id, index, spanKey(span)]),
+        seeded: true,
+      }));
+  }
+
+  const sha256 = hashText(String(file.content ?? ''));
+  project.curated_seed = {
+    filename: String(file.name),
+    sha256,
+    documents: seededDocuments.size,
+    spans: seededSpanCount,
+    imported_at: occurredAt,
+  };
+  project.decision_events.push({
+    event_id: 'decision-event-000001',
+    sequence: 1,
+    occurred_at: occurredAt,
+    curator_id: String(curatorId ?? '').trim() || null,
+    document_id: null,
+    disagreement_id: null,
+    action: 'import_curated_seed',
+    candidate_id: null,
+    spans: null,
+    previous_decision: null,
+    curated_seed: { ...project.curated_seed },
+  });
+  return project;
 }
 
 export function finalSpansForDocument(document) {

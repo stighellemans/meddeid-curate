@@ -112,8 +112,67 @@ test('store validates and persists curator-authored edit and split decisions', a
   }
 });
 
-test('whole-text confirmation accepts the current curated result without forcing every difference', async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'meddeid-curate-optional-differences-'));
+test('custom selection matching a submitted candidate is recorded as included', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'meddeid-curate-submitted-match-'));
+  try {
+    const store = createProjectStore({ rootDir, dataDir });
+    await store.load();
+    const submitted = { begin: 0, end: 5, text: 'Alice', label: 'Name:Patient' };
+    const imported = await store.importFiles([
+      { name: 'a.jsonl', content: jsonl(submitted) },
+      { name: 'b.jsonl', content: jsonl(null) },
+    ], { curatorId: 'curator-test' });
+    const document = imported.project.documents[0];
+    const disagreement = document.disagreements[0];
+    const candidate = disagreement.candidates[0];
+
+    const resolved = await store.resolveDisagreement(document.document_id, disagreement.disagreement_id, {
+      decision: 'custom_spans',
+      spans: [{ begin: submitted.begin, end: submitted.end, label: submitted.label }],
+      curatorId: 'curator-test',
+    });
+
+    const saved = resolved.project.documents[0].disagreements[0];
+    assert.equal(saved.decision.type, 'accept_candidate');
+    assert.equal(saved.decision.candidate_id, candidate.candidate_id);
+    assert.equal(resolved.project.decision_events[0].action, 'accept_candidate');
+    assert.equal(resolved.project.decision_events[0].spans, null);
+  } finally {
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('direct curator span matching a submitted candidate is converted to included', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'meddeid-curate-direct-submitted-match-'));
+  try {
+    const store = createProjectStore({ rootDir, dataDir });
+    await store.load();
+    const submitted = { begin: 0, end: 5, text: 'Alice', label: 'Name:Patient' };
+    const imported = await store.importFiles([
+      { name: 'a.jsonl', content: jsonl(submitted) },
+      { name: 'b.jsonl', content: jsonl(null) },
+    ], { curatorId: 'curator-test' });
+    const candidate = imported.project.documents[0].disagreements[0].candidates[0];
+
+    const resolved = await store.mutateCuratorSpan('doc-001', {
+      action: 'add',
+      span: { begin: submitted.begin, end: submitted.end, label: submitted.label },
+      curatorId: 'curator-test',
+    });
+
+    const document = resolved.project.documents[0];
+    assert.equal(document.curator_spans.length, 0);
+    assert.equal(document.disagreements[0].decision.type, 'accept_candidate');
+    assert.equal(document.disagreements[0].decision.candidate_id, candidate.candidate_id);
+    assert.equal(resolved.project.decision_events[0].action, 'accept_candidate');
+    assert.equal(resolved.project.decision_events[0].canonicalized_from, 'curator_span_add');
+  } finally {
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('whole-text confirmation requires an explicit bulk override for unresolved differences', async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'meddeid-curate-confirmation-gate-'));
   try {
     const store = createProjectStore({ rootDir, dataDir });
     await store.load();
@@ -121,18 +180,29 @@ test('whole-text confirmation accepts the current curated result without forcing
       { name: 'a.jsonl', content: jsonl({ begin: 0, end: 5, text: 'Alice', label: 'Name:Patient' }) },
       { name: 'b.jsonl', content: jsonl(null) },
     ], { curatorId: 'curator-test' });
-    const disagreementId = imported.project.documents[0].disagreements[0].disagreement_id;
+    const document = imported.project.documents[0];
+    const disagreement = document.disagreements[0];
 
-    const confirmed = await store.confirmDocument('doc-001', { curatorId: 'curator-test' });
-    const disagreement = confirmed.project.documents[0].disagreements[0];
-    assert.equal(confirmed.stats.pending, 0);
+    await assert.rejects(
+      store.confirmDocument('doc-001', { curatorId: 'curator-test' }),
+      /1 disagreement\(s\) still require an explicit decision/,
+    );
+    const unresolved = await store.bootstrap();
+    assert.equal(unresolved.stats.pending, 1);
+    assert.equal(unresolved.stats.confirmedDocuments, 0);
+    assert.equal(unresolved.project.decision_events.length, 0);
+
+    const confirmed = await store.confirmDocument(document.document_id, {
+      curatorId: 'curator-test',
+      confirmUnresolved: true,
+    });
     assert.equal(confirmed.stats.confirmedDocuments, 1);
-    assert.equal(disagreement.disagreement_id, disagreementId);
-    assert.equal(disagreement.decision.type, 'reject_all');
-    assert.equal(disagreement.decision.implicit, true);
+    assert.equal(confirmed.project.documents[0].disagreements[0].decision.type, 'reject_all');
+    assert.equal(confirmed.project.documents[0].disagreements[0].decision.bulk_confirmation, true);
+    assert.equal(confirmed.project.decision_events.at(-1).action, 'confirm_document');
     assert.deepEqual(
-      confirmed.project.decision_events.at(-1).untouched_disagreements_retained_as_absent,
-      [disagreementId],
+      confirmed.project.decision_events.at(-1).bulk_absent_disagreement_ids,
+      [disagreement.disagreement_id],
     );
   } finally {
     await fs.rm(dataDir, { recursive: true, force: true });

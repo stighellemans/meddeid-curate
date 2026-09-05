@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
+  applyCuratedSeed,
   consensusSpanIdentity,
   createMergeProject,
   finalSpansForDocument,
@@ -12,6 +13,18 @@ import {
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function sameSpan(left, right) {
+  return left.begin === right.begin && left.end === right.end && left.label === right.label;
+}
+
+function findSubmittedMatch(document, span) {
+  for (const disagreement of document.disagreements) {
+    const candidate = disagreement.candidates.find((item) => sameSpan(item.span, span));
+    if (candidate) return { disagreement, candidate };
+  }
+  return null;
 }
 
 async function exists(filePath) {
@@ -103,7 +116,7 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
     };
   }
 
-  async function importFiles(files, { curatorId } = {}) {
+  async function importFiles(files, { curatorId, curatedFile } = {}) {
     return exclusive(async () => {
       const normalizedCuratorId = String(curatorId ?? '').trim();
       if (!normalizedCuratorId) {
@@ -113,6 +126,7 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
       }
       project = createMergeProject(files, taxonomy);
       project.curator = { curator_id: normalizedCuratorId };
+      if (curatedFile) applyCuratedSeed(project, curatedFile, taxonomy, { curatorId: normalizedCuratorId });
       undoHistory = [];
       redoHistory = [];
       await atomicWriteJson(projectPath, project);
@@ -168,6 +182,11 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
         error.statusCode = 400;
         throw error;
       }
+      const submittedMatch = decision === 'custom_spans' && curatedSpans.length === 1
+        ? disagreement.candidates.find((candidate) => sameSpan(candidate.span, curatedSpans[0]))
+        : null;
+      const effectiveDecision = submittedMatch ? 'accept_candidate' : decision;
+      const effectiveCandidateId = submittedMatch?.candidate_id ?? candidateId;
       const normalizedCuratorId = String(curatorId ?? project.curator?.curator_id ?? '').trim();
       if (!normalizedCuratorId) {
         const error = new Error('curatorId is required for the decision audit log');
@@ -179,13 +198,13 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
       document.curation_status = 'unconfirmed';
       document.confirmed_at = null;
       document.confirmed_by = null;
-      disagreement.status = decision === 'reset' ? 'pending' : 'resolved';
-      disagreement.decision = decision === 'reset'
+      disagreement.status = effectiveDecision === 'reset' ? 'pending' : 'resolved';
+      disagreement.decision = effectiveDecision === 'reset'
         ? null
         : {
-            type: decision,
-            candidate_id: decision === 'accept_candidate' ? candidateId : null,
-            spans: decision === 'custom_spans' ? curatedSpans : undefined,
+            type: effectiveDecision,
+            candidate_id: effectiveDecision === 'accept_candidate' ? effectiveCandidateId : null,
+            spans: effectiveDecision === 'custom_spans' ? curatedSpans : undefined,
             resolved_at: new Date().toISOString(),
           };
       project.decision_events.push({
@@ -195,18 +214,18 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
         curator_id: normalizedCuratorId,
         document_id: documentId,
         disagreement_id: disagreementId,
-        action: decision,
-        candidate_id: decision === 'accept_candidate' ? candidateId : null,
-        spans: decision === 'custom_spans' ? curatedSpans : null,
+        action: effectiveDecision,
+        candidate_id: effectiveDecision === 'accept_candidate' ? effectiveCandidateId : null,
+        spans: effectiveDecision === 'custom_spans' ? curatedSpans : null,
         previous_decision: previousDecision,
       });
-      recordHistory(documentId, beforeDocument, clone(document), decision);
+      recordHistory(documentId, beforeDocument, clone(document), effectiveDecision);
       await atomicWriteJson(projectPath, project);
       return bootstrap();
     });
   }
 
-  async function confirmDocument(documentId, { curatorId } = {}) {
+  async function confirmDocument(documentId, { curatorId, confirmUnresolved = false } = {}) {
     return exclusive(async () => {
       if (!project) {
         const error = new Error('No curation project is loaded');
@@ -226,18 +245,20 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
         throw error;
       }
       if (document.curation_status === 'confirmed') return bootstrap();
+      const unresolvedDisagreements = document.disagreements.filter((item) => item.status !== 'resolved');
+      if (unresolvedDisagreements.length > 0 && confirmUnresolved !== true) {
+        const error = new Error(`${unresolvedDisagreements.length} disagreement(s) still require an explicit decision before confirmation`);
+        error.statusCode = 409;
+        throw error;
+      }
       const beforeDocument = clone(document);
       const occurredAt = new Date().toISOString();
-      const untouchedDisagreementIds = document.disagreements
-        .filter((item) => item.status !== 'resolved')
-        .map((item) => item.disagreement_id);
-      for (const disagreement of document.disagreements) {
-        if (disagreement.status === 'resolved') continue;
+      for (const disagreement of unresolvedDisagreements) {
         disagreement.status = 'resolved';
         disagreement.decision = {
           type: 'reject_all',
           candidate_id: null,
-          implicit: true,
+          bulk_confirmation: true,
           resolved_at: occurredAt,
         };
       }
@@ -255,7 +276,7 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
         candidate_id: null,
         spans: null,
         previous_decision: null,
-        untouched_disagreements_retained_as_absent: untouchedDisagreementIds,
+        bulk_absent_disagreement_ids: unresolvedDisagreements.map((item) => item.disagreement_id),
       });
       recordHistory(documentId, beforeDocument, clone(document), 'confirm_document');
       await atomicWriteJson(projectPath, project);
@@ -313,16 +334,18 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
           error.statusCode = 400;
           throw error;
         }
-        const otherSpans = finalSpansForDocument(document).filter(
-          (item) => item.curator_span_id !== curatorSpanId && item.consensus_span_id !== consensusSpanId,
-        );
-        const overlap = otherSpans.find(
-          (item) => Math.max(item.begin, normalizedSpan.begin) < Math.min(item.end, normalizedSpan.end),
-        );
-        if (overlap) {
-          const error = new Error(`Curator span overlaps existing curated span [${overlap.begin}, ${overlap.end})`);
-          error.statusCode = 400;
-          throw error;
+        if (!findSubmittedMatch(document, normalizedSpan)) {
+          const otherSpans = finalSpansForDocument(document).filter(
+            (item) => item.curator_span_id !== curatorSpanId && item.consensus_span_id !== consensusSpanId,
+          );
+          const overlap = otherSpans.find(
+            (item) => Math.max(item.begin, normalizedSpan.begin) < Math.min(item.end, normalizedSpan.end),
+          );
+          if (overlap) {
+            const error = new Error(`Curator span overlaps existing curated span [${overlap.begin}, ${overlap.end})`);
+            error.statusCode = 400;
+            throw error;
+          }
         }
       }
       const normalizedCuratorId = String(curatorId ?? project.curator?.curator_id ?? '').trim();
@@ -338,6 +361,44 @@ export function createProjectStore({ rootDir, dataDir } = {}) {
         : existingIndex >= 0
           ? { ...document.curator_spans[existingIndex] }
           : null;
+      const submittedMatch = normalizedSpan && consensusIndex < 0
+        ? findSubmittedMatch(document, normalizedSpan)
+        : null;
+      if (submittedMatch) {
+        const { disagreement, candidate } = submittedMatch;
+        const previousDecision = disagreement.decision ? { ...disagreement.decision } : null;
+        document.curator_spans = document.curator_spans.filter((item, index) => (
+          index !== existingIndex && !sameSpan(item, normalizedSpan)
+        ));
+        disagreement.status = 'resolved';
+        disagreement.decision = {
+          type: 'accept_candidate',
+          candidate_id: candidate.candidate_id,
+          resolved_at: occurredAt,
+        };
+        document.curation_status = 'unconfirmed';
+        document.confirmed_at = null;
+        document.confirmed_by = null;
+        project.decision_events.push({
+          event_id: `decision-event-${String(project.decision_events.length + 1).padStart(6, '0')}`,
+          sequence: project.decision_events.length + 1,
+          occurred_at: occurredAt,
+          curator_id: normalizedCuratorId,
+          document_id: documentId,
+          disagreement_id: disagreement.disagreement_id,
+          action: 'accept_candidate',
+          candidate_id: candidate.candidate_id,
+          curator_span_id: previousSpan?.curator_span_id ?? null,
+          consensus_span_id: null,
+          spans: null,
+          previous_span: previousSpan,
+          previous_decision: previousDecision,
+          canonicalized_from: `curator_span_${action}`,
+        });
+        recordHistory(documentId, beforeDocument, clone(document), 'accept_candidate');
+        await atomicWriteJson(projectPath, project);
+        return bootstrap();
+      }
       let nextSpan = null;
       if (consensusIndex >= 0) {
         const overrideIndex = document.consensus_span_overrides.findIndex(

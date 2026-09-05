@@ -5,9 +5,16 @@ application compares two or more completed independent annotation sets,
 records explicit curation decisions, and publishes primary gold data together
 with an audit log.
 
-See [prepare and annotate data](https://stighellemans.github.io/meddeid.github.io/workflows/prepare-and-annotate/#5-curate-only-when-required)
+See [prepare and annotate data](https://stighellemans.github.io/meddeid/workflows/prepare-and-annotate/#5-curate-only-when-required)
 for when curation belongs in a study. This repository remains authoritative for
 reconciliation decisions, audit behavior, and gold publication.
+
+## Interface preview
+
+![Multi-annotator curation interface comparing synthetic annotation sets and their disagreements](docs/images/interface.jpg)
+
+The example uses synthetic data. It shows the curated result beside read-only
+annotator lanes, with disagreement navigation and whole-document confirmation.
 
 ## Run locally
 
@@ -22,6 +29,12 @@ Open `http://localhost:5183`, select two or more completed canonical JSONL
 files, and enter a pseudonymous curator identifier. The working project is
 stored at `data/project.json`.
 
+The application keeps one active comparison. **New comparison** warns before
+opening the import screen; the current project and audit history are replaced
+only after a new import validates successfully. Supporting several switchable
+comparisons requires separate project storage and is not part of the current
+single-project workflow.
+
 Each input row must contain:
 
 - `document_id`, stable within the dataset revision;
@@ -32,6 +45,13 @@ Each input row must contain:
 An explicitly completed row with `spans: []` means that the document was
 reviewed and contains no PII. A missing row is treated as an incomplete
 submission.
+
+The import screen also offers a collapsed **Start from prior curation** option.
+One canonical curated JSONL can seed the working result without counting as an
+annotator: exact submitted candidates are restored as included, unmatched spans
+remain curator edits, and omitted candidates are restored as absent. The seed
+must contain the same documents and immutable text as the annotation sets, and
+all documents still require whole-text confirmation.
 
 ## Annotation-set manifests
 
@@ -69,10 +89,10 @@ candidates are shown as optional differences. The curator can:
 
 Every action appends an audit event containing the curator, document,
 disagreement, candidate, timestamp, and previous decision. Whole-document
-confirmation accepts the current curated pane as the intended result; untouched
-differences are recorded as intentionally absent rather than forcing a separate
-decision for each one. Any later edit invalidates that confirmation. Source text
-cannot be edited.
+confirmation normally follows explicit review of every difference. If differences
+remain, the interface requires a warning dialog before confirmation; continuing
+explicitly records every untouched difference as absent in the audit event. Any
+later edit invalidates that confirmation. Source text cannot be edited.
 
 ## Publish gold
 
@@ -96,12 +116,12 @@ The released container is the default route; no source checkout or Node.js
 installation is required:
 
 ```bash
-docker pull ghcr.io/stighellemans/meddeid-curate:0.1.0
+docker pull ghcr.io/stighellemans/meddeid-curate:0.2.0
 mkdir -p curation-data
 docker run --rm -p 127.0.0.1:8793:8793 \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v "$PWD/curation-data:/app/data" \
-  ghcr.io/stighellemans/meddeid-curate:0.1.0
+  ghcr.io/stighellemans/meddeid-curate:0.2.0
 ```
 
 To test an unreleased source change instead, run

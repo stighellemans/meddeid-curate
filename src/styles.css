@@ -41,6 +41,19 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .file-row:last-child { border-bottom: 0; }
 .file-row > span:last-child { color: #7d8882; }
 .file-index { color: #297252; font-size: 10px; font-weight: 850; }
+.optional-curated-seed { border-top: 1px solid #edf0ed; margin-top: 16px; padding-top: 12px; }
+.optional-curated-seed summary { align-items: center; color: #68746e; cursor: pointer; display: flex; font-size: 11px; font-weight: 750; gap: 8px; list-style: none; }
+.optional-curated-seed summary::-webkit-details-marker { display: none; }
+.optional-curated-seed summary::before { content: '+'; font-size: 14px; font-weight: 500; }
+.optional-curated-seed[open] summary::before { content: '−'; }
+.optional-curated-seed summary em { background: #f0f2f0; border-radius: 999px; color: #89918d; font-size: 8px; font-style: normal; padding: 3px 6px; text-transform: uppercase; }
+.optional-curated-seed-body { background: #fafbfa; border: 1px solid #e7ebe8; border-radius: 8px; margin-top: 9px; padding: 11px; }
+.optional-curated-seed-body p { color: #7b8580; font-size: 10px; line-height: 1.45; margin: 0 0 9px; }
+.optional-file-picker input { height: 1px; opacity: 0; position: absolute; width: 1px; }
+.optional-file-picker span { border: 1px solid #d6ddd9; border-radius: 6px; color: #52615a; cursor: pointer; display: inline-block; font-size: 10px; font-weight: 750; padding: 7px 9px; }
+.optional-file-selection { align-items: center; display: flex; gap: 8px; justify-content: space-between; margin-top: 8px; }
+.optional-file-selection strong { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.optional-file-selection button { background: transparent; border: 0; color: #8f493f; cursor: pointer; font-size: 9px; }
 .import-button { margin-top: 18px; width: 100%; }
 .privacy-note { color: #828c87; font-size: 11px; margin: 12px 0 0; text-align: center; }
 .error-message { background: #fff1ef; border: 1px solid #f0c9c3; border-radius: 7px; color: #942c20; font-size: 12px; margin-top: 14px; padding: 11px; }
@@ -421,6 +434,14 @@ button.lane-segment:hover { box-shadow: inset 0 -3px var(--danger), 0 0 0 2px rg
 .selected-span-label { border: 1px solid rgb(23 32 42 / 10%); border-radius: 999px; color: #263642; font-size: 9px; font-weight: 800; line-height: 1; padding: 7px 9px; white-space: nowrap; }
 .selected-span-compact .delete-span-button { align-self: center; margin: 0; padding: 8px 12px; width: auto; }
 .audit-footer { background: #17202a; color: #aeb9c4; height: 34px; }
+.confirmation-dialog-backdrop { align-items: center; background: rgb(16 24 32 / 58%); display: flex; inset: 0; justify-content: center; padding: 24px; position: fixed; z-index: 1000; }
+.confirmation-dialog { background: #fff; border: 1px solid #d8c5bd; border-radius: 12px; box-shadow: 0 24px 80px rgb(16 24 32 / 28%); max-width: 480px; padding: 28px; width: 100%; }
+.confirmation-dialog h2 { color: var(--ink); font-size: 22px; margin: 8px 0 10px; }
+.confirmation-dialog p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0; }
+.confirmation-dialog-actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 24px; }
+.danger-confirm-button { background: #9b3f32; border: 1px solid #87352a; border-radius: 7px; color: #fff; cursor: pointer; font: inherit; font-size: 10px; font-weight: 800; padding: 10px 13px; }
+.danger-confirm-button:hover { background: #87352a; }
+.danger-confirm-button:disabled { cursor: wait; opacity: .6; }
 
 .import-page { background: var(--bg); display: grid; grid-template-columns: minmax(330px, .75fr) minmax(480px, 1.25fr); padding: 42px; }
 .import-intro { background: #fff; border: 1px solid var(--border); border-radius: 12px 0 0 12px; color: var(--ink); padding: 60px; }

@@ -248,6 +248,7 @@ function AnnotationLane({ document, source, sourceIndex, disagreement, windowRan
 
 function ImportScreen({ onImported, existingProject }) {
   const [files, setFiles] = React.useState([]);
+  const [curatedFile, setCuratedFile] = React.useState(null);
   const [curatorId, setCuratorId] = React.useState(() => localStorage.getItem('meddeid.curatorId') ?? 'curator-01');
   const [dragging, setDragging] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -268,7 +269,6 @@ function ImportScreen({ onImported, existingProject }) {
       setError('Enter a pseudonymous curator ID for the audit trail.');
       return;
     }
-    if (existingProject && !window.confirm('Replace the current working curation project with these files?')) return;
     setBusy(true);
     setError('');
     try {
@@ -277,10 +277,14 @@ function ImportScreen({ onImported, existingProject }) {
         name: file.name,
         content: await file.text(),
       })));
+      const uploadCuratedFile = curatedFile ? {
+        name: curatedFile.name,
+        content: await curatedFile.text(),
+      } : null;
       onImported(await api('/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ curatorId: curatorId.trim(), files: uploadFiles }),
+        body: JSON.stringify({ curatorId: curatorId.trim(), files: uploadFiles, curatedFile: uploadCuratedFile }),
       }));
     } catch (nextError) {
       setError(nextError.message);
@@ -331,9 +335,28 @@ function ImportScreen({ onImported, existingProject }) {
             ))}
           </div>
         )}
+        <details className="optional-curated-seed">
+          <summary><span>Start from prior curation</span><em>Optional</em></summary>
+          <div className="optional-curated-seed-body">
+            <p>Seed the working result from one previously curated canonical JSONL. It is not counted as an annotator.</p>
+            <label className="optional-file-picker">
+              <input type="file" accept=".jsonl,application/json" onChange={(event) => {
+                setCuratedFile(event.target.files?.[0] ?? null);
+                setError('');
+              }} />
+              <span>{curatedFile ? 'Replace curated JSONL' : 'Choose curated JSONL'}</span>
+            </label>
+            {curatedFile && (
+              <div className="optional-file-selection">
+                <strong>{curatedFile.name}</strong>
+                <button type="button" onClick={() => setCuratedFile(null)}>Remove</button>
+              </div>
+            )}
+          </div>
+        </details>
         {error && <div className="error-message" role="alert">{error}</div>}
         <button className="primary-button import-button" onClick={importFiles} disabled={busy || annotationFileCount < 2}>
-          {busy ? 'Validating and comparing…' : `Compare ${annotationFileCount || ''} annotation sets`}
+          {busy ? 'Validating and comparing…' : `Compare ${annotationFileCount || ''} annotation sets${curatedFile ? ' with prior curation' : ''}`}
         </button>
         <p className="privacy-note">Files are processed by the localhost application and are never uploaded externally.</p>
       </section>
@@ -356,6 +379,8 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
   const [selectedCustomIndex, setSelectedCustomIndex] = React.useState(-1);
   const [selectedCuratorSpanId, setSelectedCuratorSpanId] = React.useState(null);
   const [selectedConsensusSpanId, setSelectedConsensusSpanId] = React.useState(null);
+  const [showConfirmWarning, setShowConfirmWarning] = React.useState(false);
+  const [showNewComparisonWarning, setShowNewComparisonWarning] = React.useState(false);
   const curatedTextRef = React.useRef(null);
 
   const visibleDocuments = project.documents.filter((doc) => {
@@ -392,6 +417,8 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
     setSelectedCustomIndex(-1);
     setSelectedCuratorSpanId(null);
     setSelectedConsensusSpanId(null);
+    setShowConfirmWarning(false);
+    setShowNewComparisonWarning(false);
     const firstProblemPart = textParts.findIndex((part) => part.disagreements.some((item) => item.status !== 'resolved'));
     setSelectedPartIndex(firstProblemPart >= 0 ? firstProblemPart : 0);
   }, [selectedDocument?.document_id]);
@@ -474,16 +501,24 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
         },
       );
       setPayload(next);
+      const savedDecision = next.project.documents
+        .find((document) => document.document_id === selectedDocument.document_id)
+        ?.disagreements.find((item) => item.disagreement_id === targetDisagreement.disagreement_id)
+        ?.decision?.type ?? decision;
+      if (savedDecision === 'accept_candidate') {
+        setCustomSpans([]);
+        setSelectedCustomIndex(-1);
+      }
       // Curation is deliberately non-linear: keep the curator on the same
       // document and disagreement after every decision until they navigate.
       setSelectedDocId(selectedDocument.document_id);
       setSelectedDisagreementId(targetDisagreement.disagreement_id);
       setMessage(
-        decision === 'accept_candidate'
+        savedDecision === 'accept_candidate'
           ? 'Candidate retained.'
-          : decision === 'reject_all'
+          : savedDecision === 'reject_all'
             ? 'No span retained.'
-            : decision === 'custom_spans'
+            : savedDecision === 'custom_spans'
               ? 'Custom curated resolution saved.'
               : 'Decision reopened.',
       );
@@ -683,8 +718,12 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
     }
   }
 
-  async function confirmSelectedDocument() {
+  async function confirmSelectedDocument({ confirmUnresolved = false } = {}) {
     if (!selectedDocument) return;
+    if (selectedPendingCount > 0 && !confirmUnresolved) {
+      setShowConfirmWarning(true);
+      return;
+    }
     const confirmedDocumentId = selectedDocument.document_id;
     const currentDocumentIndex = project.documents.findIndex((doc) => doc.document_id === confirmedDocumentId);
     const documentsAfterCurrent = [
@@ -700,9 +739,10 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
       const next = await api(`/documents/${encodeURIComponent(confirmedDocumentId)}/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ curatorId: project.curator.curator_id }),
+        body: JSON.stringify({ curatorId: project.curator.curator_id, confirmUnresolved }),
       });
       setPayload(next);
+      setShowConfirmWarning(false);
       setSelectedDocId(nextDocument?.document_id ?? confirmedDocumentId);
       setSelectedDisagreementId(null);
       setMessage(`Confirmed the complete curated text for ${confirmedDocumentId}.`);
@@ -757,7 +797,6 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
   const undoShortcut = `${modifier}Z`;
   const redoShortcut = appleDevice ? '⇧⌘Z' : 'Ctrl+Y';
   const confirmShortcut = `${modifier}Enter`;
-  const deleteShortcut = `${modifier}Delete`;
 
   React.useEffect(() => {
     function handleWorkspaceShortcut(event) {
@@ -765,7 +804,37 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
       const typing = target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
       const modifier = event.metaKey || event.ctrlKey;
       const token = event.key.toLowerCase();
-      if (!modifier || event.altKey || typing || event.repeat) return;
+      if (event.altKey || typing || event.repeat) return;
+      if (showConfirmWarning || showNewComparisonWarning) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setShowConfirmWarning(false);
+          setShowNewComparisonWarning(false);
+        }
+        return;
+      }
+      if (!modifier && (event.key === 'Delete' || event.key === 'Backspace') && selectedCustomSpan) {
+        event.preventDefault();
+        void removeSelectedCuratedSpan();
+        return;
+      }
+      if (!modifier && selectedCustomSpan) {
+        const category = Object.entries(categoryKeys)
+          .find(([, key]) => key.toLowerCase() === token)?.[0];
+        if (category) {
+          event.preventDefault();
+          void updateSelectedCustomLabel(category, '');
+          return;
+        }
+        const subtype = Object.entries(subtypeKeys)
+          .find(([, key]) => key.toLowerCase() === token)?.[0];
+        if (subtype && selectedAllowedSubtypes.includes(subtype)) {
+          event.preventDefault();
+          void updateSelectedCustomLabel(selectedCustomLabel.category, subtype);
+          return;
+        }
+      }
+      if (!modifier) return;
       if (token === 'z') {
         event.preventDefault();
         void moveHistory(event.shiftKey ? 'redo' : 'undo');
@@ -774,11 +843,6 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
       if (token === 'y') {
         event.preventDefault();
         void moveHistory('redo');
-        return;
-      }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedCustomSpan) {
-        event.preventDefault();
-        void removeSelectedCuratedSpan();
         return;
       }
       if (event.key === 'Enter') {
@@ -792,7 +856,7 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
     }
     window.addEventListener('keydown', handleWorkspaceShortcut);
     return () => window.removeEventListener('keydown', handleWorkspaceShortcut);
-  }, [payload.history?.canUndo, payload.history?.canRedo, selectedDocument?.document_id, selectedDocument?.curation_status, selectedCustomSpan, selectedPendingCount, busy]);
+  }, [payload.history?.canUndo, payload.history?.canRedo, selectedDocument?.document_id, selectedDocument?.curation_status, selectedCustomSpan, selectedCustomLabel.category, selectedAllowedSubtypes, selectedPendingCount, showConfirmWarning, showNewComparisonWarning, busy]);
 
   return (
     <div className="workspace">
@@ -803,7 +867,7 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
           <div className="progress-track"><div className="progress-fill" style={{ width: `${stats.documents ? (stats.confirmedDocuments / stats.documents) * 100 : 100}%` }} /></div>
         </div>
         <div className="top-actions">
-          <button className="secondary-button" onClick={onNewProject}>New comparison</button>
+          <button className="secondary-button" onClick={() => setShowNewComparisonWarning(true)}>New comparison</button>
           <button className="primary-button" onClick={finalize} disabled={busy || stats.pending > 0 || stats.confirmedDocuments < stats.documents}>Publish gold</button>
           {publishedGold && <a className="download-button" href="/api/export">Download gold</a>}
         </div>
@@ -857,14 +921,16 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
                   type="button"
                   className="primary-button toolbar-confirm-button"
                   aria-label="Confirm text"
-                  onClick={confirmSelectedDocument}
+                  onClick={() => confirmSelectedDocument()}
                   disabled={busy || selectedDocument?.curation_status === 'confirmed'}
-                  title={`Confirm the current curated text (${confirmShortcut})${selectedPendingCount > 0 ? `; ${selectedPendingCount} untouched difference${selectedPendingCount === 1 ? '' : 's'} will remain absent` : ''}`}
+                  title={selectedPendingCount > 0
+                    ? `Review warning for ${selectedPendingCount} remaining difference${selectedPendingCount === 1 ? '' : 's'}`
+                    : `Confirm the current curated text (${confirmShortcut})`}
                 >{selectedDocument?.curation_status === 'confirmed' ? '✓ Confirmed' : 'Confirm text'}</button>
                 <small>{selectedDocument?.curation_status === 'confirmed'
                   ? 'Whole text confirmed'
                   : selectedPendingCount > 0
-                    ? `${selectedPendingCount} optional difference${selectedPendingCount === 1 ? '' : 's'}`
+                    ? `${selectedPendingCount} difference${selectedPendingCount === 1 ? '' : 's'} remaining`
                     : 'Ready to confirm'}</small>
               </div>
             </div>
@@ -940,7 +1006,7 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
                 <div className="selected-span-compact">
                   <strong>&quot;{Array.from(selectedDocument.text).slice(selectedCustomSpan.begin, selectedCustomSpan.end).join('')}&quot;</strong>
                   <span className="selected-span-label" style={{ backgroundColor: labelColor(selectedCustomSpan.label) }}>{selectedCustomSpan.label}</span>
-                  <button className="delete-span-button" onClick={removeSelectedCuratedSpan} disabled={busy} title={`Delete selected span (${deleteShortcut})`}>Delete</button>
+                  <button className="delete-span-button" onClick={removeSelectedCuratedSpan} disabled={busy} title="Delete selected span (Backspace)">Delete</button>
                 </div>
               ) : (
                 <div className="conflict-heading">
@@ -989,6 +1055,47 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
         <span>{project.decision_events.length} append-only decision events</span>
         <span>Offset unit: Unicode code points</span>
       </footer>
+      {showConfirmWarning && (
+        <div className="confirmation-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setShowConfirmWarning(false);
+        }}>
+          <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmation-warning-title">
+            <span className="eyebrow">Unresolved differences</span>
+            <h2 id="confirmation-warning-title">Confirm this text anyway?</h2>
+            <p>
+              {selectedPendingCount} difference{selectedPendingCount === 1 ? '' : 's'} {selectedPendingCount === 1 ? 'has' : 'have'} not been reviewed.
+              Continuing will explicitly record every untouched difference as absent and confirm the complete text.
+            </p>
+            <div className="confirmation-dialog-actions">
+              <button type="button" className="secondary-button" onClick={() => setShowConfirmWarning(false)}>Cancel</button>
+              <button type="button" className="danger-confirm-button" onClick={() => confirmSelectedDocument({ confirmUnresolved: true })} disabled={busy}>
+                {busy ? 'Confirming…' : `Confirm and mark ${selectedPendingCount} absent`}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {showNewComparisonWarning && (
+        <div className="confirmation-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setShowNewComparisonWarning(false);
+        }}>
+          <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="new-comparison-warning-title">
+            <span className="eyebrow">Single active comparison</span>
+            <h2 id="new-comparison-warning-title">Replace the current comparison?</h2>
+            <p>
+              A successful new import will replace this working comparison and its decision history.
+              A validation error will leave it unchanged. Existing published export files remain on disk until you publish another comparison.
+            </p>
+            <div className="confirmation-dialog-actions">
+              <button type="button" className="secondary-button" onClick={() => setShowNewComparisonWarning(false)}>Cancel</button>
+              <button type="button" className="danger-confirm-button" onClick={() => {
+                setShowNewComparisonWarning(false);
+                onNewProject();
+              }}>Continue to import</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
