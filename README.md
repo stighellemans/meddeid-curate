@@ -29,11 +29,21 @@ Open `http://localhost:5183`, select two or more completed canonical JSONL
 files, and enter a pseudonymous curator identifier. The working project is
 stored at `data/project.json`.
 
-The application keeps one active comparison. **New comparison** warns before
-opening the import screen; the current project and audit history are replaced
-only after a new import validates successfully. Supporting several switchable
-comparisons requires separate project storage and is not part of the current
-single-project workflow.
+For the shared, switchable workspace, start with:
+
+```bash
+MEDDEID_WORKSPACE_DIR=/absolute/path/to/shared-workspace npm run dev
+```
+
+Curate then opens a comparison library. **New comparison → From workspace** selects completed Annotate assignments from that same folder, while **Import files** supports external reviewer files. Each comparison has separate inputs, decisions and finalized versions under `curate/<id>/`. Use **Workspace** to switch comparisons; clicking outside the controls collapses them and restores the editor's full height. Several comparisons can be open in separate browser tabs.
+
+After confirming all texts, **Publish gold** preserves a finalized version. In Subannotate, **From workspace** can select that exact version without downloading or copying files. For direct navigation, set `VITE_WORKSPACE_SUBANNOTATE_URL` when starting/building the frontend. The suite's preview launcher and Compose configuration set the companion URLs automatically. All three applications must use the same `MEDDEID_WORKSPACE_DIR`.
+
+A legacy `curate/project.json` already in the shared folder is copied once into the library without removing the original. Old published gold is preserved; republish the comparison to mark its current working state finalized.
+
+Without `MEDDEID_WORKSPACE_DIR`, the standalone application retains its single active comparison at `data/project.json` (or `MEDDEID_CURATE_DATA_DIR`). In that legacy mode, **New comparison** warns before replacing the current project after successful validation.
+
+For train, validation and test, create separate comparisons and select reviewer versions of the same split. All inputs must contain the same documents and text. Explicit split labels are checked when selecting workspace sources.
 
 Each input row must contain:
 
@@ -94,6 +104,11 @@ remain, the interface requires a warning dialog before confirmation; continuing
 explicitly records every untouched difference as absent in the audit event. Any
 later edit invalidates that confirmation. Source text cannot be edited.
 
+Use the document list to choose which document you are working on. Its filters
+show documents still to review, confirmed documents, or all documents. You may
+review them in any order, but every document must receive whole-text
+confirmation before the comparison can be published.
+
 ## Publish gold
 
 Publication is blocked while a document lacks whole-text confirmation.
@@ -110,18 +125,30 @@ The manifest pins the annotations and decision log by SHA-256.
 `annotations.jsonl` uses the same format as `meddeid-annotate` output and can be
 linked directly to `meddeid-subannotate`.
 
+These filenames are fixed within one data directory. Publishing a different
+comparison there replaces the existing export. Keep splits—and separate rounds
+that must be retained—in different directories, for example:
+
+```text
+curation-data/
+├── train/exports/
+├── validation/exports/
+└── test/exports/
+```
+
 ## Docker
 
 The released container is the default route; no source checkout or Node.js
 installation is required:
 
 ```bash
-docker pull ghcr.io/stighellemans/meddeid-curate:0.2.0
-mkdir -p curation-data
+docker pull ghcr.io/stighellemans/meddeid-curate:0.3.0
+split=train
+mkdir -p "curation-data/$split"
 docker run --rm -p 127.0.0.1:8793:8793 \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  -v "$PWD/curation-data:/app/data" \
-  ghcr.io/stighellemans/meddeid-curate:0.2.0
+  -v "$PWD/curation-data/$split:/app/data" \
+  ghcr.io/stighellemans/meddeid-curate:0.3.0
 ```
 
 To test an unreleased source change instead, run
@@ -140,3 +167,9 @@ npm run test:browser
 ## Licence
 
 AGPL-3.0-only.
+
+### Updating linked workspace sources
+
+Managed reviews detect newer workspace sources on opening, focus and every 30 seconds while visible. **Newer source available** opens an impact preview; **Update this review** applies it to the same assignment, retaining compatible work and reopening affected content for review. Unsaved work must finish saving first. Curate requires a new publication before its corrections are available to Subannotate. Profile pins and previous published versions remain unchanged.
+
+Use **Source updates → Recovery versions** to restore the state before an update; the current state is retained first. Recovery files are deduplicated under the assignment's `.source-history/` directory. Include hidden directories when backing up the workspace. Stale previews and stale browser writes are rejected. File-only imports have no linked workspace source to monitor.

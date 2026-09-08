@@ -5,6 +5,17 @@ semantic versioning while pre-1.0 versions may still refine public contracts.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
+- Added a persistent comparison library for multiple isolated curation
+  projects, including shared-workspace source selection and immutable
+  publication versions for Subannotate.
+- Added safe in-place source updates with impact previews, compatible decision
+  retention, stale-write protection, recovery versions, trash, restore, and
+  permanent deletion.
+- Added document filters and strengthened long-running update, recovery, and
+  browser regression coverage.
+
 ## [0.2.0] - 2026-09-05
 
 - Added optional import of a prior curated JSONL as an audited seed without

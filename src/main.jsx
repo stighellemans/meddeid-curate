@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+import Workspace from './Workspace.jsx';
 import { isAppleDevice, shortcutModifier } from './platform-shortcuts.js';
 import { buildTextParts, textPartSnippet, textPartTone } from './text-parts.js';
 
@@ -37,8 +38,8 @@ function RedoIcon() {
   );
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(`${API_ROOT}${path}`, options);
+async function api(path, options = {}, apiRoot = API_ROOT) {
+  const response = await fetch(`${apiRoot}${path}`, options);
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.detail ?? payload?.error ?? response.statusText);
   return payload;
@@ -231,7 +232,7 @@ function AnnotationLane({ document, source, sourceIndex, disagreement, windowRan
       <div className="lane-heading">
         <div>
           <span className="lane-avatar">{String.fromCharCode(65 + sourceIndex)}</span>
-          <span><strong>{source.annotator_id ?? source.filename}</strong><small>{source.annotation_set_id}</small></span>
+          <span><strong>{source.display_name ?? source.annotator_id ?? source.filename}</strong><small>{source.annotation_set_id}</small></span>
         </div>
         <em>{visibleCandidateCount > 0 ? `${visibleCandidateCount} clickable alternative${visibleCandidateCount === 1 ? '' : 's'}` : 'No difference in this part'}</em>
       </div>
@@ -364,11 +365,31 @@ function ImportScreen({ onImported, existingProject }) {
   );
 }
 
-function CurateWorkspace({ payload, setPayload, onNewProject }) {
-  const { project, stats, publishedGold, taxonomy } = payload;
-  const [filter, setFilter] = React.useState('pending');
+const apiRequest = api;
+
+function CurateWorkspace({ payload, setPayload, onNewProject, apiRoot = API_ROOT, assignmentId = 'legacy', onWorkspaceState, workspaceControl, onWorkspaceHome, workspaceMetadata, sourceUpdateControl }) {
+  const [saveFailed, setSaveFailed] = React.useState(false);
+  const retryRef = React.useRef(null);
+  const sourceRevision = React.useRef(workspaceMetadata?.sourceRevision || 'initial');
+  const baseApi = React.useCallback((path, options) => apiRequest(path, {...options,headers:{...options?.headers,'X-Workspace-Revision':sourceRevision.current}}, apiRoot), [apiRoot]);
+  async function api(path, options = {}) {
+    if (retryRef.current && options.method && options.method !== 'GET') throw new Error('Retry or discard the failed change before making another change.');
+    try {
+      const next = await baseApi(path, options);
+      if (options.method && options.method !== 'GET') { retryRef.current = null; setSaveFailed(false); }
+      return next;
+    } catch (error) {
+      if (options.method && options.method !== 'GET') { retryRef.current = () => baseApi(path, options); setSaveFailed(true); }
+      throw error;
+    }
+  }
+
+  const { stats, publishedGold, taxonomy } = payload;
+  const project = React.useMemo(() => ({...payload.project, sources:payload.project.sources.map(source => ({...source,display_name:workspaceMetadata?.inputSources?.find(input => input.id === source.annotation_set_id)?.name}))}), [payload.project,workspaceMetadata]);
+  const [filter, setFilter] = React.useState(() => localStorage.getItem(`meddeid.curate.${assignmentId}.filter`) || 'pending');
   const [selectedDocId, setSelectedDocId] = React.useState(() =>
-    project.documents.find((doc) => doc.curation_status !== 'confirmed')?.document_id
+    project.documents.find((doc) => doc.document_id === localStorage.getItem(`meddeid.curate.${assignmentId}.document`))?.document_id
+      ?? project.documents.find((doc) => doc.curation_status !== 'confirmed')?.document_id
       ?? project.documents[0]?.document_id,
   );
   const [selectedDisagreementId, setSelectedDisagreementId] = React.useState(null);
@@ -382,6 +403,25 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
   const [showConfirmWarning, setShowConfirmWarning] = React.useState(false);
   const [showNewComparisonWarning, setShowNewComparisonWarning] = React.useState(false);
   const curatedTextRef = React.useRef(null);
+  React.useEffect(() => {
+    onWorkspaceState?.({dirty:saveFailed,saving:busy,failed:saveFailed,reviewed:stats.confirmedDocuments,total:stats.documents,
+      revision: `${project.decision_events.length}:${publishedGold?.manifest?.published_at || ''}`,
+      save: async () => {
+        if (!retryRef.current) return !saveFailed;
+        try {
+          await retryRef.current();
+          setPayload(await baseApi('/bootstrap'));
+          retryRef.current = null;
+          setSaveFailed(false);
+          return true;
+        } catch (error) {setMessage(error.message); return false;}
+      }});
+  }, [busy, saveFailed, stats.confirmedDocuments, stats.documents, project.decision_events.length, publishedGold, onWorkspaceState, baseApi]);
+  React.useEffect(() => {
+    localStorage.setItem(`meddeid.curate.${assignmentId}.document`, selectedDocId || '');
+    localStorage.setItem(`meddeid.curate.${assignmentId}.filter`, filter);
+  }, [assignmentId, selectedDocId, filter]);
+
 
   const visibleDocuments = project.documents.filter((doc) => {
     if (filter === 'all') return true;
@@ -861,17 +901,27 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
   return (
     <div className="workspace">
       <header className="topbar">
-        <div className="brand"><div><strong>Curation Console</strong><small>{project.dataset.dataset_id} · {project.sources.length} annotation sets</small></div></div>
+        <div className="brand"><div><strong>Curation Console</strong>{workspaceControl}<small>{workspaceMetadata ? `${workspaceMetadata.dataset} / ${workspaceMetadata.name}` : project.dataset.dataset_id} · {project.sources.length} annotation sets</small></div></div>
         <div className="progress-summary" aria-label={`${stats.confirmedDocuments} of ${stats.documents} texts confirmed`}>
           <div className="progress-copy"><strong>{stats.confirmedDocuments}/{stats.documents} texts confirmed</strong><span>{stats.documents ? Math.round((stats.confirmedDocuments / stats.documents) * 100) : 100}%</span></div>
           <div className="progress-track"><div className="progress-fill" style={{ width: `${stats.documents ? (stats.confirmedDocuments / stats.documents) * 100 : 100}%` }} /></div>
         </div>
         <div className="top-actions">
-          <button className="secondary-button" onClick={() => setShowNewComparisonWarning(true)}>New comparison</button>
+          {sourceUpdateControl}
+          <button className="secondary-button" onClick={() => onWorkspaceHome ? onWorkspaceHome() : setShowNewComparisonWarning(true)}>{onWorkspaceHome ? 'All comparisons' : 'New comparison'}</button>
           <button className="primary-button" onClick={finalize} disabled={busy || stats.pending > 0 || stats.confirmedDocuments < stats.documents}>Publish gold</button>
-          {publishedGold && <a className="download-button" href="/api/export">Download gold</a>}
+          {publishedGold && <a className="download-button" href={`${apiRoot}/export`}>Download gold</a>}
         </div>
       </header>
+      {saveFailed && <div className="curate-save-error" role="alert">A change could not be saved. <button onClick={async () => {
+        setBusy(true);
+        try {await retryRef.current?.(); setPayload(await baseApi('/bootstrap')); retryRef.current=null; setSaveFailed(false); setCustomSpans([]); setMessage('Change saved.');}
+        catch(error){setMessage(error.message);} finally{setBusy(false);}
+      }} disabled={busy}>Retry save</button><button disabled={busy} onClick={async () => {
+        setBusy(true);
+        try {setPayload(await baseApi('/bootstrap')); retryRef.current=null; setSaveFailed(false); setCustomSpans([]); setMessage('Showing the last saved state.');}
+        catch(error){setMessage(error.message);} finally{setBusy(false);}
+      }}>Discard failed change</button></div>}
       <aside className="document-sidebar">
         <div className="sidebar-heading">
           <div><span className="eyebrow">Documents</span><strong>{stats.documents} records</strong></div>
@@ -905,7 +955,7 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
         <div className="source-legend">
           <span className="eyebrow">Compared sets</span>
           {project.sources.map((source, index) => (
-            <div key={source.annotation_set_id}><i>{String.fromCharCode(65 + index)}</i><span><strong>{source.filename}</strong><small>{source.annotation_set_id}</small></span></div>
+            <div key={source.annotation_set_id}><i>{String.fromCharCode(65 + index)}</i><span><strong>{source.display_name ?? source.filename}</strong><small>{source.annotation_set_id}</small></span></div>
           ))}
         </div>
       </aside>
@@ -1100,21 +1150,25 @@ function CurateWorkspace({ payload, setPayload, onNewProject }) {
   );
 }
 
-function App() {
+function App({ apiRoot = API_ROOT, assignmentId = 'legacy', onWorkspaceState, workspaceControl, onWorkspaceHome, workspaceMetadata, sourceUpdateControl } = {}) {
+  const scopedApi = React.useCallback(async (path, options) => {
+    const result = await api(path, options, apiRoot);
+    return result;
+  }, [apiRoot]);
   const [payload, setPayload] = React.useState(null);
   const [showImport, setShowImport] = React.useState(false);
   const [loadError, setLoadError] = React.useState('');
   React.useEffect(() => {
-    api('/bootstrap').then(setPayload).catch((error) => setLoadError(error.message));
-  }, []);
+    scopedApi('/bootstrap').then(setPayload).catch((error) => setLoadError(error.message));
+  }, [scopedApi]);
   if (loadError) return <div className="fatal-error"><h1>MedDeID Curate could not start</h1><p>{loadError}</p></div>;
   if (!payload) return <div className="loading-screen">Loading curation workspace…</div>;
   if (!payload.project || showImport) {
     return <ImportScreen existingProject={payload.project} onImported={(next) => { setPayload(next); setShowImport(false); }} />;
   }
-  return <CurateWorkspace payload={payload} setPayload={setPayload} onNewProject={() => setShowImport(true)} />;
+  return <CurateWorkspace sourceUpdateControl={sourceUpdateControl} workspaceMetadata={workspaceMetadata} apiRoot={apiRoot} assignmentId={assignmentId} onWorkspaceState={onWorkspaceState} workspaceControl={workspaceControl} onWorkspaceHome={onWorkspaceHome} payload={payload} setPayload={setPayload} onNewProject={() => setShowImport(true)} />;
 }
 
 const appRoot = globalThis.__meddeidCurateRoot
   ?? (globalThis.__meddeidCurateRoot = createRoot(document.getElementById('root')));
-appRoot.render(<App />);
+appRoot.render(<Workspace Editor={App} kind="curate" />);

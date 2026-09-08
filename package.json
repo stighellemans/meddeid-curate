@@ -1,6 +1,6 @@
 {
   "name": "meddeid-curate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local multi-annotator reconciliation for canonical MedDeID JSONL",
   "private": true,
   "author": "Stig Hellemans",
@@ -19,7 +19,8 @@
     "test:browser": "node tests/browser/smoke.mjs"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "fflate": "^0.8.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.4.1",
