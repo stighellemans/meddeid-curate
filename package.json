@@ -1,6 +1,6 @@
 {
   "name": "meddeid-curate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local multi-annotator reconciliation for canonical MedDeID JSONL",
   "private": true,
   "author": "Stig Hellemans",

@@ -142,13 +142,13 @@ The released container is the default route; no source checkout or Node.js
 installation is required:
 
 ```bash
-docker pull ghcr.io/stighellemans/meddeid-curate:0.3.0
+docker pull ghcr.io/stighellemans/meddeid-curate:0.3.1
 split=train
 mkdir -p "curation-data/$split"
 docker run --rm -p 127.0.0.1:8793:8793 \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v "$PWD/curation-data/$split:/app/data" \
-  ghcr.io/stighellemans/meddeid-curate:0.3.0
+  ghcr.io/stighellemans/meddeid-curate:0.3.1
 ```
 
 To test an unreleased source change instead, run

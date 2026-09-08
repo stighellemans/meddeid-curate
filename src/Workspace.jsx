@@ -1156,7 +1156,7 @@ export default function Workspace({ Editor, kind }) {
             <p className="ws-result-note">
               {details.complete
                 ? "Your next download includes the completed result and its manifest."
-                : "You can download a snapshot now. It will be marked as work in progress until review is complete."}
+                : "You can download an incomplete snapshot now. It will remain clearly labelled as incomplete until review is complete."}
             </p>
           )}
           <div className="ws-dialog-actions">

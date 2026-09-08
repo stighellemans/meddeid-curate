@@ -5,6 +5,11 @@ semantic versioning while pre-1.0 versions may still refine public contracts.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-08
+
+- Replaced the remaining ambiguous unfinished-export wording with an explicit
+  “incomplete snapshot” status.
+
 ## [0.3.0] - 2026-09-08
 
 - Added a persistent comparison library for multiple isolated curation
